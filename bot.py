@@ -15,7 +15,7 @@ NOTIFIED_ORDERS_FILE = "notified_orders.json"
 TIMEOUT = 30 
 
 def get_session():
-    """Create a session with retry logic."""
+    """Create a session with retry logic and exponential backoff."""
     session = requests.Session()
     retries = Retry(
         total=3,
@@ -63,21 +63,32 @@ def load_notified_orders():
 def save_notified_orders(orders):
     """Saves notified orders to JSON."""
     with open(NOTIFIED_ORDERS_FILE, "w") as f:
-        json.dump(orders, f)
+        json.dump(orders, f, indent=4)
 
 def check_orders():
     session = get_session()
     shop = os.environ.get("SHOP_NAME", "Shop")
     try:
         token = get_access_token(session)
-        headers = {"Authorization": f"Bearer {token}"}
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json"
+        }
         
-        response = session.get(f"{BASE_URL}/orders", headers=headers, params={"status": "pending"}, timeout=TIMEOUT)
-        response.raise_for_status()
+        # GOP API requirement: POST request with filter object
+        url = f"{BASE_URL}/orders"
+        payload = {"filter": {"status": "pending"}}
         
+        response = session.post(url, headers=headers, json=payload, timeout=TIMEOUT)
+        
+        if response.status_code != 200:
+            logger.error(f"API Error Response: {response.text}")
+            response.raise_for_status()
+            
         data = response.json()
         orders = data.get("orders", [])
         notified = load_notified_orders()
+        
         new_orders = [o for o in orders if o.get("order_id") not in notified]
 
         if new_orders:
@@ -87,6 +98,7 @@ def check_orders():
                        f"Value: {order.get('price', 'N/A')}\nStatus: {order.get('status', 'N/A')}")
                 send_telegram(msg)
                 notified.append(order.get("order_id"))
+            
             save_notified_orders(notified)
             logger.info(f"Processed {len(new_orders)} new orders.")
         else:
@@ -99,4 +111,4 @@ def check_orders():
 
 if __name__ == "__main__":
     check_orders()
-    
+        
