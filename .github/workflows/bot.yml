@@ -1,20 +1,31 @@
 name: Jumia Order Bot
+
 on:
   schedule:
-    - cron: '0 * * * *' # This runs the bot at the start of every hour
-  workflow_dispatch:     # This lets you click "Run" manually to test
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+
 jobs:
-  build:
+  bot:
     runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
     steps:
-      - uses: actions/checkout@v3
-      - name: Set up Python
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Setup Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.9'
-      - name: Install requests
+          python-version: "3.9"
+
+      - name: Install dependencies
         run: pip install requests
-      - name: Run Bot
+
+      - name: Run bot
         env:
           JUMIA_CLIENT_ID: ${{ secrets.JUMIA_CLIENT_ID }}
           JUMIA_REFRESH_TOKEN: ${{ secrets.JUMIA_REFRESH_TOKEN }}
@@ -22,4 +33,18 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SHOP_NAME: ${{ secrets.SHOP_NAME }}
         run: python bot.py
-        
+
+      - name: Commit updated orders file
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Pull latest changes to avoid conflicts if runs overlap
+          git pull --rebase
+
+          git add notified_orders.json
+
+          # Only commit and push if the file actually changed
+          git diff --quiet && git diff --staged --quiet || \
+          (git commit -m "Update notified orders" && git push)
+          
