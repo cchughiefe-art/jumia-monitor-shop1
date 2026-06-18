@@ -1,48 +1,101 @@
-import requests
 import os
+import json
+import logging
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
-# Secrets
-CLIENT_ID = os.environ['JUMIA_CLIENT_ID']
-REFRESH_TOKEN = os.environ['JUMIA_REFRESH_TOKEN']
-TOKEN = os.environ['TELEGRAM_TOKEN']
-CHAT_ID = os.environ['TELEGRAM_CHAT_ID']
-SHOP_NAME = os.environ['SHOP_NAME']
+# Setup Logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
+# Configuration
 BASE_URL = "https://vendor-api.jumia.com"
+NOTIFIED_ORDERS_FILE = "notified_orders.json"
+TIMEOUT = 30 
 
-def get_access_token():
-    url = f"{BASE_URL}/oauth/token"
-    data = {
+def get_session():
+    """Create a session with retry logic."""
+    session = requests.Session()
+    retries = Retry(
+        total=3,
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET", "POST"]
+    )
+    session.mount("https://", HTTPAdapter(max_retries=retries))
+    return session
+
+def get_access_token(session):
+    """Exchanges Refresh Token for Access Token."""
+    url = f"{BASE_URL}/token"
+    payload = {
         "grant_type": "refresh_token",
-        "refresh_token": REFRESH_TOKEN,
-        "client_id": CLIENT_ID
+        "refresh_token": os.environ.get("JUMIA_REFRESH_TOKEN"),
+        "client_id": os.environ.get("JUMIA_CLIENT_ID")
     }
-    response = requests.post(url, data=data).json()
-    return response.get('access_token')
+    response = session.post(url, data=payload, timeout=TIMEOUT)
+    response.raise_for_status()
+    token = response.json().get("access_token")
+    if not token:
+        raise ValueError("Failed to retrieve access token.")
+    return token
 
-def send_telegram(msg):
-    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": f"[{SHOP_NAME}] {msg}"}
-    requests.post(url, data=payload)
+def send_telegram(message):
+    """Sends a message to Telegram."""
+    token = os.environ.get("TELEGRAM_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {"chat_id": chat_id, "text": message}
+    requests.post(url, data=payload, timeout=TIMEOUT)
+
+def load_notified_orders():
+    """Loads notified orders with JSON corruption protection."""
+    if os.path.exists(NOTIFIED_ORDERS_FILE):
+        try:
+            with open(NOTIFIED_ORDERS_FILE, "r") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError) as e:
+            logger.error(f"Corruption detected in {NOTIFIED_ORDERS_FILE}: {e}. Resetting file.")
+            return []
+    return []
+
+def save_notified_orders(orders):
+    """Saves notified orders to JSON."""
+    with open(NOTIFIED_ORDERS_FILE, "w") as f:
+        json.dump(orders, f)
 
 def check_orders():
+    session = get_session()
+    shop = os.environ.get("SHOP_NAME", "Shop")
     try:
-        access_token = get_access_token()
-        headers = {"Authorization": f"Bearer {access_token}"}
-        url = f"{BASE_URL}/orders"
-        params = {"status": "pending"}
+        token = get_access_token(session)
+        headers = {"Authorization": f"Bearer {token}"}
         
-        response = requests.get(url, headers=headers, params=params).json()
-        orders = response.get('orders', [])
+        response = session.get(f"{BASE_URL}/orders", headers=headers, params={"status": "pending"}, timeout=TIMEOUT)
+        response.raise_for_status()
         
-        if orders:
-            send_telegram(f"Alert: You have {len(orders)} new pending order(s)!")
+        data = response.json()
+        orders = data.get("orders", [])
+        notified = load_notified_orders()
+        new_orders = [o for o in orders if o.get("order_id") not in notified]
+
+        if new_orders:
+            for order in new_orders:
+                msg = (f"{shop}\nNew Order\nID: {order.get('order_id')}\n"
+                       f"Customer: {order.get('customer_name', 'N/A')}\n"
+                       f"Value: {order.get('price', 'N/A')}\nStatus: {order.get('status', 'N/A')}")
+                send_telegram(msg)
+                notified.append(order.get("order_id"))
+            save_notified_orders(notified)
+            logger.info(f"Processed {len(new_orders)} new orders.")
         else:
-            # THIS IS THE NEW PART: Now it tells you even if it's empty
-            send_telegram("No new pending orders found.")
+            send_telegram(f"[{shop}] No new pending orders found.")
+            logger.info("No new orders found.")
             
     except Exception as e:
-        send_telegram(f"Bot Error: {str(e)}")
+        logger.error(f"Critical failure: {e}")
+        send_telegram(f"Bot Error: {e}")
 
 if __name__ == "__main__":
     check_orders()
