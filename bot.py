@@ -85,6 +85,7 @@ def check_orders():
                     save_notified_orders(notified)
             else:
                 logger.info("No new pending orders.")
+                send_telegram(f"{shop} Bot is active. Status: Connected. Orders: 0.")
         else:
             logger.error(f"API Error {response.status_code}: {response.text}")
 
