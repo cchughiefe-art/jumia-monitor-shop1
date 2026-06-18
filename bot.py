@@ -75,11 +75,12 @@ def check_orders():
             "Content-Type": "application/json"
         }
         
-        # GOP API requirement: POST request with filter object
+        # Jumia GOP API standard: Use GET with Query Parameters
         url = f"{BASE_URL}/orders"
-        payload = {"filter": {"status": "pending"}}
+        params = {"status": "pending"}
         
-        response = session.post(url, headers=headers, json=payload, timeout=TIMEOUT)
+        # Changed back to GET
+        response = session.get(url, headers=headers, params=params, timeout=TIMEOUT)
         
         if response.status_code != 200:
             logger.error(f"API Error Response: {response.text}")
@@ -108,7 +109,7 @@ def check_orders():
     except Exception as e:
         logger.error(f"Critical failure: {e}")
         send_telegram(f"Bot Error: {e}")
-
+            
 if __name__ == "__main__":
     check_orders()
         
