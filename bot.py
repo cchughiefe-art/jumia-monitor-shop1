@@ -39,22 +39,21 @@ def get_token(s):
     r.raise_for_status()
 
     token = r.json().get("access_token")
-
     if not token:
-        raise Exception("No access token returned")
+        raise Exception("Token not returned")
 
     return token
 
 
 # ---------------- TELEGRAM ----------------
-def send_telegram(text):
+def send_telegram(msg):
     url = f"https://api.telegram.org/bot{os.environ.get('TELEGRAM_TOKEN')}/sendMessage"
 
     requests.post(
         url,
         data={
             "chat_id": os.environ.get("TELEGRAM_CHAT_ID"),
-            "text": text
+            "text": msg
         },
         timeout=TIMEOUT
     )
@@ -76,38 +75,24 @@ def save_seen(data):
         json.dump(data, f)
 
 
-# ---------------- ORDER PARSER ----------------
-def parse_items(order):
-    items = (
-        order.get("items")
-        or order.get("orderItems")
-        or order.get("orderLines")
-        or []
+# ---------------- FETCH ITEMS (IMPORTANT FIX) ----------------
+def get_order_items(s, token, order_id):
+    url = f"{BASE_URL}/orders/{order_id}/items"
+
+    r = s.get(
+        url,
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=TIMEOUT
     )
 
-    result = ""
+    if r.status_code != 200:
+        logger.warning(f"Could not fetch items for {order_id}")
+        return []
 
-    for item in items:
-
-        name = (
-            item.get("name")
-            or item.get("productName")
-            or item.get("title")
-            or item.get("sku")
-        )
-
-        qty = item.get("quantity") or item.get("qty") or 1
-
-        # nested product support
-        if not name and isinstance(item.get("product"), dict):
-            name = item["product"].get("name")
-
-        if not name:
-            name = "Unknown Product"
-
-        result += f"- {name} x{qty}\n"
-
-    return result if result else "- No item details available\n"
+    try:
+        return r.json().get("items", [])
+    except:
+        return []
 
 
 # ---------------- MAIN ----------------
@@ -143,27 +128,36 @@ def run():
             price = o.get("totalAmountLocal", {}).get("value", 0)
 
             shipping = o.get("shippingAddress", {})
+            customer = f"{shipping.get('firstName','')} {shipping.get('lastName','')}".strip()
 
-            customer_name = f"{shipping.get('firstName','')} {shipping.get('lastName','')}".strip()
-            address = shipping.get("address", "")
-            city = shipping.get("city", "")
-            region = shipping.get("region", "")
-            country = shipping.get("countryName", "")
+            # ---------------- ITEMS FIX ----------------
+            items = get_order_items(s, token, order_id)
 
-            items_text = parse_items(o)
+            item_text = ""
+
+            for item in items:
+                name = (
+                    item.get("name")
+                    or item.get("productName")
+                    or item.get("sku")
+                    or "Unknown Product"
+                )
+
+                qty = item.get("quantity", 1)
+
+                item_text += f"- {name} x{qty}\n"
+
+            if not item_text:
+                item_text = "- No item details available\n"
 
             message = (
                 f"{shop}\n\n"
                 f"NEW ORDER\n"
                 f"Order No: {order_no}\n"
-                f"Order ID: {order_id}\n\n"
-                f"Customer:\n{customer_name}\n\n"
-                f"Address:\n{address}\n"
-                f"{city}, {region}\n"
-                f"{country}\n\n"
-                f"Items:\n{items_text}\n"
+                f"Customer: {customer}\n\n"
                 f"Amount: ₦{price}\n"
-                f"Status: {status}"
+                f"Status: {status}\n\n"
+                f"Items:\n{item_text}"
             )
 
             send_telegram(message)
