@@ -36,7 +36,13 @@ def get_token(s):
     r = s.post(url, data=payload, timeout=TIMEOUT)
     r.raise_for_status()
 
-    return r.json()["access_token"]
+    data = r.json()
+    token = data.get("access_token")
+
+    if not token:
+        raise Exception("No access token returned")
+
+    return token
 
 
 def send_telegram(text):
@@ -101,14 +107,26 @@ def run():
             shipping = o.get("shippingAddress", {})
             customer = f"{shipping.get('firstName','')} {shipping.get('lastName','')}".strip()
 
+            # ITEMS EXTRACTION
+            items = o.get("items", []) or o.get("orderItems", [])
+
+            item_text = ""
+            for item in items:
+                name = item.get("name") or item.get("productName") or "Unknown Item"
+                qty = item.get("quantity", 1)
+                item_text += f"- {name} x{qty}\n"
+
+            if not item_text:
+                item_text = "- No item details available\n"
+
             message = (
                 f"{shop}\n"
                 f"New Order Received\n"
                 f"Order No: {order_no}\n"
-                f"ID: {order_id}\n"
                 f"Customer: {customer}\n"
                 f"Amount: ₦{price}\n"
-                f"Status: {status}"
+                f"Status: {status}\n\n"
+                f"Items:\n{item_text}"
             )
 
             send_telegram(message)
@@ -117,13 +135,13 @@ def run():
 
         save_seen(seen)
 
-        logger.info(f"Sent {len(new_orders)} new order notifications")
+        logger.info(f"Processed {len(new_orders)} new orders")
 
     except Exception as e:
         logger.error(str(e))
 
         send_telegram(
-            f"Bot Error in {os.environ.get('SHOP_NAME','Shop')}: {str(e)}"
+            f"Bot Error ({os.environ.get('SHOP_NAME','Shop')}): {str(e)}"
         )
 
 
