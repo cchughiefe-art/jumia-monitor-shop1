@@ -1,0 +1,25 @@
+name: Jumia Order Bot
+on:
+  schedule:
+    - cron: '0 * * * *' # This runs the bot at the start of every hour
+  workflow_dispatch:     # This lets you click "Run" manually to test
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      - name: Install requests
+        run: pip install requests
+      - name: Run Bot
+        env:
+          JUMIA_CLIENT_ID: ${{ secrets.JUMIA_CLIENT_ID }}
+          JUMIA_REFRESH_TOKEN: ${{ secrets.JUMIA_REFRESH_TOKEN }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SHOP_NAME: ${{ secrets.SHOP_NAME }}
+        run: python bot.py
+        
