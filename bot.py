@@ -77,7 +77,7 @@ def check_orders():
         
         # Jumia GOP API standard: Use GET with Query Parameters
         url = f"{BASE_URL}/orders"
-        params = {"status": "pending"}
+        params = {"status": "processing"}
         
         # Changed back to GET
         response = session.get(url, headers=headers, params=params, timeout=TIMEOUT)
