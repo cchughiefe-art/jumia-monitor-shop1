@@ -37,14 +37,17 @@ jobs:
       - name: Commit updated orders file
         run: |
           git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Pull latest changes to avoid conflicts if runs overlap
-          git pull --rebase
+# Force reset the state to avoid unstaged changes errors
+git reset --hard HEAD
 
-          git add notified_orders.json
+# Pull latest changes
+git pull origin main --rebase
 
-          # Only commit and push if the file actually changed
-          git diff --quiet && git diff --staged --quiet || \
-          (git commit -m "Update notified orders" && git push)
-          
+# Add your file
+git add notified_orders.json
+
+# Only commit and push if the file actually changed
+git diff --quiet && git diff --staged --quiet || \
+(git commit -m "Update notified orders" && git push)
