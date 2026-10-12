@@ -1,20 +1,27 @@
-name: Discover Stations
-on: workflow_dispatch # This lets you trigger it manually from the Actions tab
+name: Discover Shipment Providers
+on:
+  workflow_dispatch:
+    inputs:
+      item_id:
+        description: 'Order-item UUID from /orders/items (not order UUID)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
 
 jobs:
-  run-discovery:
+  discovery:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - uses: actions/setup-python@v5
         with:
-          python-version: '3.9'
-      - name: Install dependencies
-        run: pip install requests
-      - name: Run discovery script
-        run: python discovery.py
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - name: Discover providers
         env:
           JUMIA_CLIENT_ID: ${{ secrets.JUMIA_CLIENT_ID }}
           JUMIA_REFRESH_TOKEN: ${{ secrets.JUMIA_REFRESH_TOKEN }}
-          
+          ORDER_ITEM_ID: ${{ inputs.item_id }}
+        run: python discovery.py "$ORDER_ITEM_ID"

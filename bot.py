@@ -1,180 +1,86 @@
-import os
+"""Scheduled order monitor for GitHub Actions or a cron server."""
 import json
 import logging
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+import os
+from pathlib import Path
 
-logging.basicConfig(level=logging.INFO)
+from jumia_client import JumiaClient
+from telegram_api import Telegram
+
+logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
-
-BASE_URL = "https://vendor-api.jumia.com"
-FILE = "notified_orders.json"
-TIMEOUT = 30
+STATE_FILE = Path(os.getenv("JUMIA_MONITOR_STATE", "notified_orders.json"))
 
 
-# ---------------- SESSION ----------------
-def session():
-    s = requests.Session()
-    retries = Retry(
-        total=3,
-        backoff_factor=1,
-        status_forcelist=[429, 500, 502, 503, 504]
-    )
-    s.mount("https://", HTTPAdapter(max_retries=retries))
-    return s
-
-
-# ---------------- TOKEN ----------------
-def get_token(s):
-    url = f"{BASE_URL}/token"
-
-    payload = {
-        "grant_type": "refresh_token",
-        "refresh_token": os.environ.get("JUMIA_REFRESH_TOKEN"),
-        "client_id": os.environ.get("JUMIA_CLIENT_ID")
-    }
-
-    r = s.post(url, data=payload, timeout=TIMEOUT)
-    r.raise_for_status()
-
-    token = r.json().get("access_token")
-    if not token:
-        raise Exception("Token not returned")
-
-    return token
-
-
-# ---------------- TELEGRAM ----------------
-def send_telegram(msg):
-    url = f"https://api.telegram.org/bot{os.environ.get('TELEGRAM_TOKEN')}/sendMessage"
-
-    requests.post(
-        url,
-        data={
-            "chat_id": os.environ.get("TELEGRAM_CHAT_ID"),
-            "text": msg
-        },
-        timeout=TIMEOUT
-    )
-
-
-# ---------------- STORAGE ----------------
-def load_seen():
-    try:
-        if os.path.exists(FILE):
-            with open(FILE, "r") as f:
-                return json.load(f)
-    except:
+def load_seen(path=STATE_FILE):
+    if not path.exists():
         return []
-    return []
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, list) or not all(isinstance(x, str) for x in data):
+        raise ValueError("Invalid notification state file")
+    return data
 
 
-def save_seen(data):
-    with open(FILE, "w") as f:
-        json.dump(data, f)
+def save_seen(data, path=STATE_FILE):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(data[-2000:], indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)
 
 
-# ---------------- FETCH ITEMS (IMPORTANT FIX) ----------------
-def get_order_items(s, token, order_id):
-    url = f"{BASE_URL}/orders/{order_id}/items"
+def order_text(order, items=None, shop="Jumia Shop"):
+    amount = order.get("totalAmountLocal") or order.get("totalAmount") or {}
+    if not isinstance(amount, dict):
+        amount = {}
+    country = order.get("country") or {}
+    currency = amount.get("currency") or country.get("currencyCode", "")
+    total = amount.get("value", "?")
+    lines = [shop, "NEW JUMIA ORDER", "Order: " + str(order.get("number", "?")),
+             "Status: " + str(order.get("status", "?")),
+             "Amount: " + str(total) + " " + str(currency)]
+    if items:
+        lines.append("Items:")
+        for item in items[:25]:
+            product = item.get("product") or {}
+            name = product.get("name") or product.get("sellerSku") or "Unknown product"
+            lines.append("- " + str(name)[:120] + " (" + str(item.get("status", "?")) + ")")
+    # Customer shipping address and phone are intentionally omitted from chats.
+    return "\n".join(lines)
 
-    r = s.get(
-        url,
-        headers={"Authorization": f"Bearer {token}"},
-        timeout=TIMEOUT
-    )
 
-    if r.status_code != 200:
-        logger.warning(f"Could not fetch items for {order_id}")
-        return []
-
-    try:
-        return r.json().get("items", [])
-    except:
-        return []
-
-
-# ---------------- MAIN ----------------
-def run():
-    s = session()
-
-    try:
-        shop = os.environ.get("SHOP_NAME", "Shop")
-
-        token = get_token(s)
-
-        r = s.get(
-            f"{BASE_URL}/orders",
-            headers={"Authorization": f"Bearer {token}"},
-            params={"status": "PENDING"},
-            timeout=TIMEOUT
-        )
-
-        r.raise_for_status()
-        data = r.json()
-
-        orders = data.get("orders", [])
-        seen = load_seen()
-
-        new_orders = [o for o in orders if o.get("id") not in seen]
-
-        for o in new_orders:
-
-            order_id = o.get("id")
-            order_no = o.get("number")
-            status = o.get("status")
-
-            price = o.get("totalAmountLocal", {}).get("value", 0)
-
-            shipping = o.get("shippingAddress", {})
-            customer = f"{shipping.get('firstName','')} {shipping.get('lastName','')}".strip()
-
-            # ---------------- ITEMS FIX ----------------
-            items = get_order_items(s, token, order_id)
-
-            item_text = ""
-
-            for item in items:
-                name = (
-                    item.get("name")
-                    or item.get("productName")
-                    or item.get("sku")
-                    or "Unknown Product"
-                )
-
-                qty = item.get("quantity", 1)
-
-                item_text += f"- {name} x{qty}\n"
-
-            if not item_text:
-                item_text = "- No item details available\n"
-
-            message = (
-                f"{shop}\n\n"
-                f"NEW ORDER\n"
-                f"Order No: {order_no}\n"
-                f"Customer: {customer}\n\n"
-                f"Amount: ₦{price}\n"
-                f"Status: {status}\n\n"
-                f"Items:\n{item_text}"
-            )
-
-            send_telegram(message)
-
-            seen.append(order_id)
-
-        save_seen(seen)
-
-        logger.info(f"Processed {len(new_orders)} new orders")
-
-    except Exception as e:
-        logger.error(str(e))
-
-        send_telegram(
-            f"Bot Error ({os.environ.get('SHOP_NAME','Shop')}): {str(e)}"
-        )
+def run(client=None, telegram=None, state_path=STATE_FILE):
+    client = client or JumiaClient()
+    telegram = telegram or Telegram()
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    if not chat_id:
+        raise ValueError("Missing TELEGRAM_CHAT_ID")
+    status = os.getenv("JUMIA_ORDER_STATUS", "PENDING")
+    days = int(os.getenv("JUMIA_LOOKBACK_DAYS", "14"))
+    orders = client.orders(status=status, days=days)
+    seen = load_seen(state_path)
+    already_seen = set(seen)
+    count = 0
+    for order in reversed(orders):
+        order_id = str(order.get("id") or "")
+        if not order_id or order_id in already_seen:
+            continue
+        try:
+            items = client.items(order_id)
+        except Exception as exc:
+            logger.warning("Items unavailable for order %s: %s", order_id, type(exc).__name__)
+            items = []
+        telegram.send(chat_id, order_text(order, items, os.getenv("SHOP_NAME", "Jumia Shop")))
+        seen.append(order_id)
+        already_seen.add(order_id)
+        save_seen(seen, state_path)
+        count += 1
+    logger.info("Delivered %s new order alerts", count)
+    return count
 
 
 if __name__ == "__main__":
-    run()
+    try:
+        run()
+    except Exception:
+        logger.exception("Jumia monitor failed")
+        raise
