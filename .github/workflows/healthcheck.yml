@@ -1,0 +1,24 @@
+name: Live API Health Check
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  healthcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Verify Telegram and Jumia read access
+        env:
+          JUMIA_CLIENT_ID: ${{ secrets.JUMIA_CLIENT_ID }}
+          JUMIA_REFRESH_TOKEN: ${{ secrets.JUMIA_REFRESH_TOKEN }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+        run: python healthcheck.py

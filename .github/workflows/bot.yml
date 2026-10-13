@@ -13,6 +13,7 @@ permissions:
 
 jobs:
   monitor:
+    if: vars.JUMIA_SERVER_ACTIVE != '1'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -28,7 +29,7 @@ jobs:
           JUMIA_REFRESH_TOKEN: ${{ secrets.JUMIA_REFRESH_TOKEN }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          SHOP_NAME: ${{ vars.SHOP_NAME }}
+          SHOP_NAME: ${{ vars.SHOP_NAME || secrets.SHOP_NAME }}
           JUMIA_LOOKBACK_DAYS: '14'
         run: python bot.py
       - name: Save notification IDs (also after a partially completed monitor run)
