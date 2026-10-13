@@ -8,6 +8,8 @@ import logging
 import os
 import secrets
 import time
+import threading
+from datetime import datetime, timezone
 from collections import Counter
 from pathlib import Path
 
@@ -20,18 +22,30 @@ logger = logging.getLogger(__name__)
 OFFSET_PATH = Path(os.getenv("TELEGRAM_OFFSET_FILE", "telegram_offset.json"))
 HELP = ("JUMIA SELLER ASSISTANT\n"
         "/shops - connected Jumia stores\n"
-        "/orders [status] - recent orders (default PENDING)\n"
+        "/orders [status|ALL] [page] - recent orders (default PENDING)\n"
         "/order <order_uuid> - items and item IDs\n"
         "/stats - recent status counts\n"
         "/stock [product_sid] - stock API preview\n"
         "/providers <item_uuid> - shipping methods for an item\n"
         "/check - run new-order monitor now\n"
         "/whoami - show your Telegram user ID\n"
+        "/status - worker health and last order check\n"
         "/ready <item_uuid> - propose ready-to-ship (admin only)\n"
         "/pack <item_uuid> <provider_uuid> - propose packing (admin only)\n"
         "/confirm <code> - confirm proposed action (2 minutes)\n"
         "/cancel - discard pending action\n"
         "No automatic order cancellation or price changes are enabled.")
+MENU = {"keyboard": [["/orders", "/stats"], ["/shops", "/stock"],
+                     ["/check", "/status"], ["/help", "/whoami"]],
+        "resize_keyboard": True, "is_persistent": True}
+COMMANDS = [("start", "Open the command menu"), ("orders", "Recent orders"),
+            ("shops", "Connected stores"), ("stats", "Order status summary"),
+            ("stock", "Stock preview"), ("order", "Order item details"),
+            ("providers", "Shipping providers"), ("check", "Check new orders"),
+            ("status", "Worker health"), ("whoami", "Your Telegram ID"),
+            ("pack", "Propose packing"), ("ready", "Propose ready-to-ship"),
+            ("confirm", "Confirm a proposed shipment"), ("cancel", "Clear a proposal"),
+            ("help", "Command instructions")]
 
 
 def csv_ids(name):
@@ -50,6 +64,10 @@ class Assistant:
             raise ValueError("Set TELEGRAM_CHAT_ID or TELEGRAM_ALLOWED_CHAT_IDS")
         self.admin_users = csv_ids("TELEGRAM_ADMIN_USER_IDS")
         self.pending = {}
+        self.stop = threading.Event()
+        self.started = time.monotonic()
+        self.last_monitor = "Not checked yet"
+        self.command_times = {}
         self.offset = self._load_offset()
 
     def _load_offset(self):
@@ -69,7 +87,24 @@ class Assistant:
                     os.getenv("ENABLE_JUMIA_WRITES", "0") == "1")
 
     def _reply(self, chat, text):
-        self.telegram.send(chat, text)
+        self.telegram.send(chat, text, reply_markup=MENU)
+
+    def startup(self):
+        self.telegram.call("getMe")
+        if self.telegram.call("getWebhookInfo").get("url"):
+            raise TelegramError("Active Telegram webhook prevents polling. Remove it before starting.")
+        self.telegram.call("setMyCommands", {"commands": [
+            {"command": name, "description": description} for name, description in COMMANDS]})
+        logger.info("Telegram connected; command menu installed")
+
+    def monitor(self):
+        try:
+            count = check_orders(self.client, self.telegram)
+            self.last_monitor = datetime.now(timezone.utc).isoformat(timespec="seconds") + ": OK"
+            return count
+        except Exception as exc:
+            self.last_monitor = datetime.now(timezone.utc).isoformat(timespec="seconds") + ": failed (" + type(exc).__name__ + ")"
+            raise
 
     def _stage(self, chat, user_id, action, args):
         if not self._is_admin(user_id):
@@ -91,6 +126,10 @@ class Assistant:
             return HELP
         if command == "/whoami":
             return "Telegram user ID: " + str(user_id)
+        if command == "/status":
+            return ("JUMIA BOT ONLINE\nUptime: " + str(int(time.monotonic() - self.started)) +
+                    " seconds\nLast order check: " + self.last_monitor +
+                    "\nShipment writes for you: " + ("enabled" if self._is_admin(user_id) else "disabled"))
         if command == "/shops":
             shops = self.client.shops()
             if not shops:
@@ -100,10 +139,24 @@ class Assistant:
                 for s in shops[:50])
         if command == "/orders":
             status = args[0].upper() if args else "PENDING"
-            orders = self.client.orders(status=status, days=14, max_pages=10)
+            if len(args) > 2:
+                return "Usage: /orders [status|ALL] [page]"
+            try:
+                page = int(args[1]) if len(args) > 1 else 1
+            except ValueError:
+                return "Page must be a positive number."
+            if page < 1:
+                return "Page must be a positive number."
+            orders = self.client.orders(status=None if status == "ALL" else status, days=14,
+                                        max_pages=20, shop_id=os.getenv("JUMIA_SHOP_ID") or None)
+            pages = max(1, (len(orders) + 14) // 15)
+            if page > pages:
+                return "There are only " + str(pages) + " pages."
             return ("Orders (" + status + "): " + str(len(orders)) + "\n" +
+                    "Page " + str(page) + " of " + str(pages) + "\n" +
                     "\n".join(str(o.get("number", "?")) + " | " + str(o.get("status", "?")) +
-                              " | " + str(o.get("id", "")) for o in orders[:15]))
+                              " | " + str(o.get("id", "")) for o in orders[(page-1)*15:page*15]) +
+                    ("\nNext: /orders " + status + " " + str(page+1) if page < pages else ""))
         if command == "/order":
             if len(args) != 1 or not valid_uuid(args[0]):
                 return "Usage: /order <order_uuid>"
@@ -118,7 +171,7 @@ class Assistant:
                              "\nItem ID: " + str(item.get("id", "?")))
             return "\n".join(lines)
         if command == "/stats":
-            orders = self.client.orders(days=14)
+            orders = self.client.orders(days=14, shop_id=os.getenv("JUMIA_SHOP_ID") or None)
             counts = Counter(str(o.get("status", "UNKNOWN")) for o in orders)
             return "Last 14 days: " + str(len(orders)) + " orders\n" + "\n".join(
                 str(k) + ": " + str(v) for k, v in sorted(counts.items()))
@@ -137,7 +190,7 @@ class Assistant:
                                  (" | needs tracking" if provider.get("requireTrackingCode") else ""))
             return "Available providers:\n" + ("\n".join(lines) if lines else "None returned")
         if command == "/check":
-            count = check_orders(self.client, self.telegram)
+            count = self.monitor()
             return "Order check finished. New alerts: " + str(count)
         if command == "/ready":
             if len(args) != 1 or not valid_uuid(args[0]):
@@ -188,11 +241,27 @@ class Assistant:
         if not text.startswith("/"):
             return
         user_id = (message.get("from") or {}).get("id")
+        if not user_id or (message.get("from") or {}).get("is_bot"):
+            return
+        # Discard queued shipment writes sent while the bot was offline.
+        command = text.split()[0].split("@")[0].lower()
+        if command in ("/pack", "/ready", "/confirm") and time.time() - message.get("date", 0) > 120:
+            self._reply(chat, "This shipment command is too old. Send it again to continue.")
+            return
+        key = (chat, str(user_id))
+        now = time.monotonic()
+        if now - self.command_times.get(key, -10) < 1:
+            return
+        self.command_times[key] = now
+        self.pending = {k: v for k, v in self.pending.items() if v[1] > now}
         try:
             reply = self.command(chat, user_id, text)
         except (JumiaError, ValueError, TelegramError) as exc:
             logger.warning("Command failed: %s", type(exc).__name__)
             reply = "Command failed: " + str(exc)[:300]
+        except Exception as exc:
+            logger.warning("Unexpected command failure: %s", type(exc).__name__)
+            reply = "Unable to complete this command. Check the server logs and try again."
         if reply:
             self._reply(chat, reply)
 
@@ -200,24 +269,29 @@ class Assistant:
         logger.info("Telegram assistant running; allowlisted chats: %s", len(self.allowed_chats))
         last_check = 0.0
         interval = max(60, int(os.getenv("JUMIA_POLL_SECONDS", "300")))
-        while True:
+        while not self.stop.is_set():
             try:
                 if time.monotonic() - last_check >= interval:
                     last_check = time.monotonic()
                     try:
-                        check_orders(self.client, self.telegram)
+                        self.monitor()
                     except Exception as exc:
                         logger.error("Monitor failed: %s", type(exc).__name__)
                 for update in self.telegram.updates(offset=self.offset, timeout=25):
-                    self.handle(update)
+                    if self.stop.is_set():
+                        break
+                    # Persist before processing so a reply failure or restart cannot replay a shipment write.
+                    # Failed read commands can be resent manually.
                     self.offset = int(update["update_id"]) + 1
                     self._save_offset()
+                    self.handle(update)
             except KeyboardInterrupt:
                 raise
             except Exception as exc:
                 logger.warning("Polling failure: %s", type(exc).__name__)
-                time.sleep(10)
+                self.stop.wait(10)
 
 
 if __name__ == "__main__":
-    Assistant().loop()
+    from main import main
+    main()

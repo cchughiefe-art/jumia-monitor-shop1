@@ -27,13 +27,16 @@ class Telegram:
         except (requests.RequestException, ValueError) as exc:
             raise TelegramError("Telegram " + method + " delivery failed") from exc
 
-    def send(self, chat_id, message):
+    def send(self, chat_id, message, reply_markup=None):
         text = str(message)
         if not text:
             return
         # Telegram text limit is 4096; split long reports safely.
         for start in range(0, len(text), 3800):
-            self.call("sendMessage", {"chat_id": str(chat_id), "text": text[start:start + 3800]})
+            payload = {"chat_id": str(chat_id), "text": text[start:start + 3800]}
+            if reply_markup:
+                payload["reply_markup"] = reply_markup
+            self.call("sendMessage", payload)
 
     def updates(self, offset=None, timeout=25):
         return self.call("getUpdates", {"offset": offset, "timeout": timeout,

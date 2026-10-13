@@ -6,6 +6,14 @@ interface. The existing GitHub Actions monitor is preserved and repaired.
 
 ## What is implemented
 
+For a persistent server, start with [KataBump deployment instructions](DEPLOY-KATABUMP.md).
+Run `python main.py`; it loads a private `.env`, stores state under `data/`,
+installs Telegram's command menu and prevents a second local worker. `/status`
+shows uptime and the latest monitor result. `/orders ALL 2` opens page two.
+Run `python healthcheck.py` or the **Live API Health Check** workflow to verify
+read access before relying on the bot. Live credentials and server login are
+required to complete deployment.
+
 - Jumia OAuth refresh-token authentication with access-token caching, safe error messages and HTTP timeouts.
 - Paginated Jumia orders with a configurable lookback window and optional status filters.
 - Correct Jumia **GET /orders/items?orderId=...** endpoint and item names/SKUs.
@@ -48,7 +56,7 @@ nano .env
 set -a
 . ./.env
 set +a
-python telegram_bot.py
+python main.py
 ```
 
 Fill the `.env` values yourself. Restrict the bot using `TELEGRAM_CHAT_ID`, and optionally `TELEGRAM_ALLOWED_CHAT_IDS` (comma-separated).

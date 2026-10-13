@@ -52,7 +52,7 @@ class JumiaClient:
             if not token:
                 raise JumiaError("Jumia token response has no access_token")
             self._token = token
-            self._expires = time.monotonic() + max(30, int(body.get("expires_in", 3600)) - 120)
+            self._expires = time.monotonic() + max(0, int(body.get("expires_in", 3600)) - 30)
             return token
         except (requests.RequestException, ValueError, TypeError) as exc:
             raise JumiaError("Jumia OAuth token request failed") from exc
@@ -71,6 +71,8 @@ class JumiaClient:
                     self._token = None
                     continue
                 response.raise_for_status()
+                if response.status_code == 204:
+                    return {"accepted": True}
                 result = response.json()
                 if not isinstance(result, (dict, list)):
                     raise JumiaError("Unexpected API response format")
@@ -83,6 +85,8 @@ class JumiaClient:
 
     def shops(self):
         response = self.request("GET", "/shops")
+        if not isinstance(response, dict) or not isinstance(response.get("shops"), list):
+            raise JumiaError("Unexpected shops response")
         return response.get("shops", [])
 
     def orders(self, status=None, shop_id=None, days=14, max_pages=10):

@@ -36,6 +36,7 @@ def order_text(order, items=None, shop="Jumia Shop"):
     currency = amount.get("currency") or country.get("currencyCode", "")
     total = amount.get("value", "?")
     lines = [shop, "NEW JUMIA ORDER", "Order: " + str(order.get("number", "?")),
+             "Order ID: " + str(order.get("id", "?")),
              "Status: " + str(order.get("status", "?")),
              "Amount: " + str(total) + " " + str(currency)]
     if items:
@@ -56,7 +57,7 @@ def run(client=None, telegram=None, state_path=STATE_FILE):
         raise ValueError("Missing TELEGRAM_CHAT_ID")
     status = os.getenv("JUMIA_ORDER_STATUS", "PENDING")
     days = int(os.getenv("JUMIA_LOOKBACK_DAYS", "14"))
-    orders = client.orders(status=status, days=days)
+    orders = client.orders(status=status, days=days, shop_id=os.getenv("JUMIA_SHOP_ID") or None)
     seen = load_seen(state_path)
     already_seen = set(seen)
     count = 0
